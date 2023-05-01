@@ -23,7 +23,7 @@ function InitialParameters(person::NamedTuple; k1 = 0.0105, k2 = 0.28, k3 = 6.07
         spill = 30, 
         k11 = 0.00045, 
         ATL_max = 0.215, 
-        K_ATL = 0.0385, 
+        K_ATL = 0.2, 
         k12 = 0.0713, 
         tau_LPL = 208.88, 
         k13 = 0.0088, 
@@ -43,7 +43,7 @@ Function to create a model initial_value vector from the test subject. The param
 be modified using their keyword arguments.
 
 Arguments:
-    sample_person   The test subject. A ComponentArray containing fields fasting_glucose, fasting_insulin, fasting_triglyceride, fasting_NEFA, body_weight, meal_glucose and meal_triglyceride
+    person   The test subject. A NamedTuple containing fields fasting_glucose, fasting_insulin, fasting_triglyceride, fasting_NEFA, body_weight, meal_glucose and meal_triglyceride
 
 Optional arguments are the initial values. Read readme.md for an explanation of all initial values.
 """
@@ -73,15 +73,16 @@ be modified using their keyword arguments.
 
 Arguments:
     parameters  a complete parameter vector made using the make_parameter_vector function.
+    person   The test subject. A NamedTuple containing fields fasting_glucose, fasting_insulin, fasting_triglyceride, fasting_NEFA, body_weight, meal_glucose and meal_triglyceride
 
 Optional arguments are the specific constants. Read readme.md for an explanation of all constants.
 """
-function Constants(parameters;
+function Constants(parameters, person;
         f_G = 0.005551,
         f_TG = 0.00113,
         f_I = 1.,
-        V_G = 17/70,
-        V_TG = 0.06,
+        V_G = (260/sqrt(person.body_weight/70))/1000,
+        V_TG = (70/sqrt(person.body_weight/70))/1000,
         G_liv_b = parameters[15],
         tau_i = 31.,
         tau_d = 3.,
@@ -95,3 +96,4 @@ function Constants(parameters;
     (f_G = f_G, f_TG = f_TG, f_I = f_I, V_G = V_G, V_TG = V_TG, G_liv_b = G_liv_b, τⁱ = tau_i, τᵈ = tau_d, G_threshold_pl = G_threshold_pl,
         t_int = t_int, c₁ = c1, c₂ = c2, c₃ = c3)
 end
+
