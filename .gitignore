@@ -2,3 +2,8 @@
 Manifest.toml
 
 *.txt
+*.svg
+*Results*
+*Figures*
+
+*.DS_Store*
