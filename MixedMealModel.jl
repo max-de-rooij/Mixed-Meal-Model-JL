@@ -292,8 +292,10 @@ function LossFunction(Model, Glucose, Insulin, Triglyceride, NEFA, TimePoints, C
             p[8]
         ]
 
-        s = solve(Model, KenCarp4(), p=parametervector, saveat=1, sensealg=ForwardDiffSensitivity(), verbose=false)
+        s = solve(Model, p=parametervector, saveat=[0:480; 720], sensealg=ForwardDiffSensitivity(), verbose=false)
         sol = Array(s)
+
+        size(sol, 2) == 482 || throw(ErrorException("ODE Solver Timestep is too small!"))
 
         # glucose error component
         glucose_error = (sol[2,TimePoints.+1].-Glucose)./maximum(Glucose)
@@ -325,7 +327,7 @@ function LossFunction(Model, Glucose, Insulin, Triglyceride, NEFA, TimePoints, C
         G_steady_state = (Subject.fasting_glucose - sol[2, 301])[1]
     
         # constrain steady state TG to measured fasting value
-        TG_steady_state = (Subject.fasting_triglyceride - sol[13, 721])[1]
+        TG_steady_state = (Subject.fasting_triglyceride - sol[13, 482])[1]
 
         # constrain steady state NEFA to measured fasting value
         model_fasting_NEFA = (3*(parametervector[16]/100)*parametervector[17]*Subject.fasting_triglyceride*Subject.fasting_insulin + parametervector[18]/(1+parametervector[19]*(Subject.fasting_insulin)^2)) / parametervector[20]
@@ -356,17 +358,17 @@ function LossFunction(Model, Glucose, Insulin, Triglyceride, NEFA, TimePoints, C
             p[8]
         ]
 
-        solve(Model, KenCarp4(), p=parametervector)
+        solve(Model, p=parametervector)
     end
 
     return Loss, SimulateModel
 end
 
 
-function FitModelLHC(loss, n, lb, ub, ϵ = 1e-9)
+function FitModelLHC(loss, n, lb, ub; ϵ = 1e-9, rng = StableRNG(1234))
 
     optf = OptimizationFunction((x,λ) -> loss(x), Optimization.AutoZygote())
-    parameter_sets = LHCoptim(n, length(lb), 1000)[1] ./ n
+    parameter_sets = LHCoptim(n, length(lb), 1000; rng = rng)[1] ./ n
     # scale parameter sets
     ubx = (1-ϵ).*ub;
     lbx = (1+ϵ).*lb;
@@ -384,7 +386,7 @@ function FitModelLHC(loss, n, lb, ub, ϵ = 1e-9)
         optprob = OptimizationProblem(optf, parameter_sets[:, it],lb=lb, ub=ub)
         local_optimizer = Optim.LBFGS(linesearch=BackTracking(order=3))
         try
-            sol = Optimization.solve(optprob, local_optimizer, x_tol=1e-8, f_tol = 1e-6, g_tol=1e-6, f_calls_limit=1000)
+            sol = Optimization.solve(optprob, local_optimizer, f_calls_limit=1000, x_tol=1e-8, f_tol = 1e-6, g_tol=1e-6, maxiters=400)
             push!(results, sol.minimizer)
             push!(objectives, sol.objective)
         catch 
