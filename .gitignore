@@ -1,2 +1,8 @@
 /.DS_Store
 Manifest.toml
+
+*.svg
+*Results*
+*Figures*
+
+*.DS_Store*
