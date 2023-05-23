@@ -1,4 +1,4 @@
-using DifferentialEquations, SciMLSensitivity, LatinHypercubeSampling, Optimization, OptimizationOptimJL, LineSearches
+using DifferentialEquations, SciMLSensitivity, LatinHypercubeSampling, Optimization, OptimizationOptimJL, LineSearches, StableRNGs
 include("ModelParameters.jl")
 
 """
@@ -105,7 +105,7 @@ Arguments:
     parameters      Model parameter vector
     constants       Model constants
     test_subject    Model test subject
-    time (optional) Optional time vector different than the solution
+    time (optional) Optional time vector, default is the time included in the solution
     
 The output is a NamedTuple containing:
     - Gut glucose
@@ -272,7 +272,28 @@ function ModelFromData(Glucose, Insulin, Triglyceride, NEFA, BodyWeight; TimeSpa
     return ODEProblem(MealModel!, u0, tspan, parameters), constants, sample_person
 end
 
-function LossFunction(Model, Glucose, Insulin, Triglyceride, NEFA, TimePoints, Constants, Subject)
+"""
+Create a loss function based on a model and the data
+
+Arguments:
+    - Model: the ODE problem to solve
+    - Glucose: Glucose data
+    - Insulin: Insulin data 
+    - Triglyceride: TG data
+    - NEFA: NEFA data
+    - TimePoints_G: Glucose timepoints associated with the data
+    - TimePoints_I: Insulin timepoints associated with the data
+    - TimePoints_TG: Triglyceride timepoints associated with the data
+    - TimePoints_NEFA: NEFA timepoints associated with the data
+    - Constants: model constants
+    - Subject: model test subject
+
+Output:
+    - loss: loss function for optimizing the parameters 
+    - simulator: function to simulate the defined model for a set of optimized parameters
+
+"""
+function LossFunction(Model, Glucose, Insulin, Triglyceride, NEFA, TimePoints_G, TimePoints_I, TimePoints_TG, TimePoints_NEFA, Constants, Subject)
 
     initialparameters = Model.p;
 
@@ -298,16 +319,16 @@ function LossFunction(Model, Glucose, Insulin, Triglyceride, NEFA, TimePoints, C
         size(sol, 2) == 482 || throw(ErrorException("ODE Solver Timestep is too small!"))
 
         # glucose error component
-        glucose_error = (sol[2,TimePoints.+1].-Glucose)./maximum(Glucose)
+        glucose_error = (sol[2,TimePoints_G.+1].-Glucose)./maximum(Glucose)
 
         # insulin error component
-        insulin_error = (sol[4,TimePoints.+1].-Insulin)./maximum(Insulin)
+        insulin_error = (sol[4,TimePoints_I.+1].-Insulin)./maximum(Insulin)
 
         # TG error component
-        TG_error = (sol[13,TimePoints.+1].-Triglyceride)./maximum(Triglyceride)
+        TG_error = (sol[13,TimePoints_TG.+1].-Triglyceride)./maximum(Triglyceride)
 
         # NEFA error component
-        NEFA_error = (sol[9,TimePoints.+1].-NEFA)./maximum(NEFA)
+        NEFA_error = (sol[9,TimePoints_NEFA.+1].-NEFA)./maximum(NEFA)
 
         # Fit error
         scaling_term = maximum(Glucose)
@@ -364,29 +385,62 @@ function LossFunction(Model, Glucose, Insulin, Triglyceride, NEFA, TimePoints, C
     return Loss, SimulateModel
 end
 
+"""
+Fit the model with multi-start optimization based on latin hypercube sampling. The model selects n_initial parameter sets from a sampling scheme, and proceeds to
+select the best selection_frac based on an initial loss function evaluation. The best parameter sets are then used as starting points for the optimization.
 
-function FitModelLHC(loss, n, lb, ub; ϵ = 1e-9, rng = StableRNG(1234))
+Arguments:
+    - loss: The used loss function
+    - n_initial: The number of initial parameter sets
+    - selection_frac: Fraction of n_initial to select for optimization
+    - lb: Parameter estimation lower bounds
+    - ub: Parameter estimation upper bounds
+
+Optional:
+    - ϵ: Small number to prevent parameter sampling on the bounds (minimum distance from the bounds of the parameter samples). Default is 1e-9.
+    - rng: Random number generator. Default is StableRNG(1234)
+    - showevery: Show loss value every showevery iterations. 0 means never show. Default is 0.
+
+Output:
+    - results: optimization results
+    - objectives: loss function values for the optimized parameters
+
+"""
+function FitModelLHC(loss, n_initial::Int, selection_frac::Float64, lb, ub; ϵ = 1e-9, rng = StableRNG(1234), showevery::Int = 0)
+
+    # check selection_frac
+    selection_frac <= 1. || throw(ArgumentError("Invalid selection_frac argument: value x = $(selection_frac) does not satisfy x <= 1"))
 
     optf = OptimizationFunction((x,λ) -> loss(x), Optimization.AutoZygote())
-    parameter_sets = LHCoptim(n, length(lb), 1000; rng = rng)[1] ./ n
+    initial_parameter_sets = LHCoptim(n_initial, length(lb), 10; rng = rng)[1] ./ n_initial
     # scale parameter sets
     ubx = (1-ϵ).*ub;
     lbx = (1+ϵ).*lb;
-    parameter_sets = (parameter_sets' .* (ubx.-lbx)) .+ lbx
+    parameter_sets = (initial_parameter_sets' .* (ubx.-lbx)) .+ lbx
 
+    initial_objectives = [loss(parameter_sets[:,it]) for it in axes(parameter_sets, 2)]
+    n_candidates = Int(floor(n_initial*selection_frac))
+    println("Found $(n_candidates) initial parameter sets")
+    candidate_sets = partialsortperm(initial_objectives, 1:n_candidates)
     results = []
     objectives = Float64[]
 
-    callback = (p, l) -> begin 
-        println("Loss: $(l)")
-        false
-    end
-    
-    for it in axes(parameter_sets,2)
+
+
+    for it in candidate_sets
+        losses = Float64[]
+
+        callback = function (p, l)
+          push!(losses, l)
+          if showevery > 0 && length(losses)%showevery==0
+              println("Current loss after $(length(losses)) iterations: $(losses[end])")
+          end
+          return false
+        end
         optprob = OptimizationProblem(optf, parameter_sets[:, it],lb=lb, ub=ub)
         local_optimizer = Optim.LBFGS(linesearch=BackTracking(order=3))
         try
-            sol = Optimization.solve(optprob, local_optimizer, f_calls_limit=1000, x_tol=1e-8, f_tol = 1e-6, g_tol=1e-6, maxiters=400)
+            sol = Optimization.solve(optprob, local_optimizer, f_calls_limit=5000, maxiters=400, callback=callback)
             push!(results, sol.minimizer)
             push!(objectives, sol.objective)
         catch 
@@ -396,6 +450,4 @@ function FitModelLHC(loss, n, lb, ub; ϵ = 1e-9, rng = StableRNG(1234))
 
     return results, objectives
 end
-
-
     
